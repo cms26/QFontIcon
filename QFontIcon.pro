@@ -14,6 +14,9 @@ TEMPLATE = app
 
 SOURCES += main.cpp
 
+# Icons from the font files (the CMake build compiles them in instead)
+DEFINES += QFONTICON_EXAMPLE_USE_FONTS
+
 
 include("QFontIcon/QFontIcon.pri")
 

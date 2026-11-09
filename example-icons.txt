@@ -1,0 +1,9 @@
+# The Font Awesome 5 icons the example uses (qfonticon_embed_icons() in CMakeLists.txt).
+# One per line: a code (f015) or name (home), optionally with a set: solid:, regular:, brands:
+home
+f15b                # file, solid
+regular:f15b        # file, regular (outline)
+thumbtack
+brands:github
+trash
+window-maximize

@@ -22,8 +22,12 @@ target_compile_features(QFontIcon PUBLIC cxx_std_17)
 target_include_directories(QFontIcon PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/QFontIcon")
 target_link_libraries(QFontIcon PUBLIC Qt${QT_VERSION_MAJOR}::Widgets)
 
-# The example: Font Awesome 5 icons on buttons (on by default only when this
-# is the top-level project)
+# qfonticon_embed_icons(<target> ICONS ... | ICONS_FILE ... | ALL): compile the
+# icons an application uses into it, so no font file is loaded at run time
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/QFontIconEmbed.cmake")
+
+# The example: Font Awesome 5 icons on buttons, compiled in (on by default
+# only when this is the top-level project)
 if(PROJECT_IS_TOP_LEVEL OR CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     set(_example_default ON)
 else()
@@ -31,7 +35,8 @@ else()
 endif()
 option(QFONTICON_BUILD_EXAMPLE "Build the QFontIcon example" ${_example_default})
 if(QFONTICON_BUILD_EXAMPLE)
-    add_executable(QFontIconExample main.cpp resource.qrc)
-    set_target_properties(QFontIconExample PROPERTIES AUTORCC ON)
+    add_executable(QFontIconExample main.cpp)
     target_link_libraries(QFontIconExample PRIVATE QFontIcon::QFontIcon)
+    # The icons main.cpp uses, compiled in: the example loads no font file
+    qfonticon_embed_icons(QFontIconExample ICONS_FILE example-icons.txt)
 endif()
