@@ -30,10 +30,15 @@ SOFTWARE.
 #include "qfonticon.h"
 
 #include <QDebug>
+#include <cstdlib>
 #include <QFile>
 #include <QFont>
 #include <QFontDatabase>
+#include <QHash>
+#include <QPainterPath>
 #include <QRawFont>
+#include <QSet>
+#include <QTransform>
 
 QFontIcon *QFontIcon::mInstance = Q_NULLPTR;
 
@@ -53,6 +58,206 @@ QFont makeFont(const QString &family, const QString &styleName)
         font.setStyleName(styleName);
     }
     return font;
+}
+
+/**
+ * @brief The compiled-in icons of the application (qfonticon_embed_icons()).
+ *
+ * Filled before main() by the generated code's static initializers, so it
+ * holds no Qt objects that need the application.
+ */
+struct EmbeddedIcons
+{
+    QList<const QFontIconEmbeddedFont *> fonts;   ///< One per icon set ("solid", ...), first registered first.
+    QHash<quint64, const QFontIconEmbeddedGlyph *> glyphs;   ///< By (font index << 32 | code).
+    QHash<const QFontIconEmbeddedGlyph *, int> glyphFont;    ///< Each icon's index into fonts.
+};
+
+/**
+ * @brief The registry of compiled-in icons.
+ * @return It; created on first use.
+ */
+EmbeddedIcons &embeddedIcons()
+{
+    static EmbeddedIcons icons;
+    return icons;
+}
+
+/**
+ * @brief The lookup key of a compiled-in icon.
+ * @param font The font's index in EmbeddedIcons::fonts.
+ * @param code The character's code.
+ * @return The key.
+ */
+quint64 glyphKey(int font, uint code)
+{
+    return (static_cast<quint64>(font) << 32) | code;
+}
+
+/**
+ * @brief Reads SVG path data (as written by tools/generate_icons.py: M, L,
+ *        H, V, Q, C, Z, absolute or relative) into a painter path.
+ * @param data The path data.
+ * @return The path, in the data's units.
+ */
+QPainterPath parseSvgPath(const char *data)
+{
+    QPainterPath path;
+    path.setFillRule(Qt::WindingFill);   // fonts' outlines use non-zero winding
+    const char *p = data;
+    char command = 0;
+    QPointF current;
+    QPointF start;
+
+    auto skipSeparators = [&p]() {
+        while (*p == ' ' || *p == ',' || *p == '\t' || *p == '\n') {
+            ++p;
+        }
+    };
+    auto readNumber = [&p, &skipSeparators]() -> qreal {
+        skipSeparators();
+        char *end = nullptr;
+        const double value = std::strtod(p, &end);
+        p = end;
+        return value;
+    };
+    auto atNumber = [&p, &skipSeparators]() {
+        skipSeparators();
+        return (*p >= '0' && *p <= '9') || *p == '-' || *p == '+' || *p == '.';
+    };
+
+    while (true) {
+        skipSeparators();
+        if (*p == 0) {
+            break;
+        }
+        if (!atNumber()) {
+            command = *p++;
+        }
+        const bool relative = (command >= 'a' && command <= 'z');
+        const QPointF base = relative ? current : QPointF();
+        switch (command) {
+        case 'M':
+        case 'm': {
+            const qreal x = readNumber();
+            const qreal y = readNumber();
+            current = base + QPointF(x, y);
+            start = current;
+            path.moveTo(current);
+            command = relative ? 'l' : 'L';   // more pairs: lines
+            break;
+        }
+        case 'L':
+        case 'l': {
+            const qreal x = readNumber();
+            const qreal y = readNumber();
+            current = base + QPointF(x, y);
+            path.lineTo(current);
+            break;
+        }
+        case 'H':
+        case 'h': {
+            const qreal x = readNumber();
+            current.setX(relative ? current.x() + x : x);
+            path.lineTo(current);
+            break;
+        }
+        case 'V':
+        case 'v': {
+            const qreal y = readNumber();
+            current.setY(relative ? current.y() + y : y);
+            path.lineTo(current);
+            break;
+        }
+        case 'Q':
+        case 'q': {
+            const qreal cx = readNumber();
+            const qreal cy = readNumber();
+            const qreal x = readNumber();
+            const qreal y = readNumber();
+            path.quadTo(base + QPointF(cx, cy), base + QPointF(x, y));
+            current = base + QPointF(x, y);
+            break;
+        }
+        case 'C':
+        case 'c': {
+            const qreal c1x = readNumber();
+            const qreal c1y = readNumber();
+            const qreal c2x = readNumber();
+            const qreal c2y = readNumber();
+            const qreal x = readNumber();
+            const qreal y = readNumber();
+            path.cubicTo(base + QPointF(c1x, c1y), base + QPointF(c2x, c2y), base + QPointF(x, y));
+            current = base + QPointF(x, y);
+            break;
+        }
+        case 'Z':
+        case 'z':
+            path.closeSubpath();
+            current = start;
+            break;
+        default:
+            // Unknown command: stop rather than draw garbage
+            qWarning("QFontIcon: unsupported path command '%c'", command);
+            return path;
+        }
+    }
+    return path;
+}
+
+/**
+ * @brief A compiled-in icon's outline, read once and kept.
+ * @param glyph The icon.
+ * @return Its outline, in font units, y up.
+ */
+const QPainterPath &embeddedPath(const QFontIconEmbeddedGlyph *glyph)
+{
+    static QHash<const QFontIconEmbeddedGlyph *, QPainterPath> cache;
+    auto it = cache.find(glyph);
+    if (it == cache.end()) {
+        it = cache.insert(glyph, parseSvgPath(glyph->path));
+    }
+    return it.value();
+}
+
+/**
+ * @brief Finds a compiled-in icon.
+ * @param code   The character.
+ * @param family The font asked for: an icon set ("regular"), a family and
+ *               style ("Font Awesome 5 Free Regular") or a family; empty: the first set.
+ * @return The icon, or @c nullptr if it wasn't compiled in.
+ */
+const QFontIconEmbeddedGlyph *findEmbedded(uint code, const QString &family)
+{
+    const EmbeddedIcons &icons = embeddedIcons();
+    if (icons.fonts.isEmpty()) {
+        return nullptr;
+    }
+    // The set asked for, then the others in order
+    int wanted = 0;
+    if (!family.isEmpty()) {
+        for (int i = 0; i < icons.fonts.size(); ++i) {
+            const QFontIconEmbeddedFont *font = icons.fonts.at(i);
+            const QString full = QString::fromUtf8(font->family) + QLatin1Char(' ') + QString::fromUtf8(font->fontStyle);
+            if (family.compare(QString::fromUtf8(font->style), Qt::CaseInsensitive) == 0
+                || family.compare(full, Qt::CaseInsensitive) == 0) {
+                wanted = i;
+                break;
+            }
+            if (family.compare(QString::fromUtf8(font->family), Qt::CaseInsensitive) == 0 && wanted == 0) {
+                wanted = i;
+            }
+        }
+    }
+    if (const QFontIconEmbeddedGlyph *glyph = icons.glyphs.value(glyphKey(wanted, code))) {
+        return glyph;
+    }
+    for (int i = 0; i < icons.fonts.size(); ++i) {
+        if (const QFontIconEmbeddedGlyph *glyph = icons.glyphs.value(glyphKey(i, code))) {
+            return glyph;
+        }
+    }
+    return nullptr;
 }
 } // namespace
 
@@ -91,16 +296,35 @@ QFontIcon *QFontIcon::instance()
 
 QIcon QFontIcon::icon(const QChar &code, const QColor &baseColor, double angle, const QString &family)
 {
-    if (instance()->families().isEmpty()) {
-        qWarning() << Q_FUNC_INFO << "No font family installed";
+    QFontIconEngine *engine = nullptr;
+
+    // Compiled in (qfonticon_embed_icons()): no font needed
+    if (const QFontIconEmbeddedGlyph *glyph = findEmbedded(code.unicode(), family)) {
+        const EmbeddedIcons &icons = embeddedIcons();
+        engine = new QFontIconEngine;
+        engine->setEmbeddedGlyph(glyph, icons.fonts.at(icons.glyphFont.value(glyph)));
+        engine->setFontFamily(QString::fromUtf8(icons.fonts.at(icons.glyphFont.value(glyph))->family));
+    } else if (!instance()->families().isEmpty()) {
+        // From a font added with addFont()
+        const Font font = instance()->fontFor(code, family);
+        engine = new QFontIconEngine;
+        engine->setFontFamily(font.family);
+        engine->setFontStyle(font.styleName);
+    } else {
+        if (embeddedIcons().fonts.isEmpty()) {
+            qWarning() << Q_FUNC_INFO << "No font family installed";
+        } else {
+            // Once per code: say which entry the icon list needs
+            static QSet<uint> reported;
+            if (!reported.contains(code.unicode())) {
+                reported.insert(code.unicode());
+                qWarning("QFontIcon: icon %04x is not compiled in: add \"%04x\" to the qfonticon_embed_icons() list",
+                         code.unicode(), code.unicode());
+            }
+        }
         return QIcon();
     }
 
-    const Font font = instance()->fontFor(code, family);
-
-    QFontIconEngine *engine = new QFontIconEngine;
-    engine->setFontFamily(font.family);
-    engine->setFontStyle(font.styleName);
     engine->setLetter(code);
     engine->setBaseColor(baseColor);
     engine->setRotation(angle);
@@ -110,6 +334,38 @@ QIcon QFontIcon::icon(const QChar &code, const QColor &baseColor, double angle, 
 QIcon QFontIcon::icon(uint code, const QColor &baseColor, double angle, const QString &family)
 {
     return icon(QChar(static_cast<char16_t>(code)), baseColor, angle, family);
+}
+
+bool QFontIcon::addEmbeddedIcons(const QFontIconEmbeddedFont *fonts, int fontCount,
+                                 const QFontIconEmbeddedGlyph *glyphs, int glyphCount)
+{
+    EmbeddedIcons &icons = embeddedIcons();
+    // This file's fonts -> the registry's (icon sets with the same name are one set)
+    QList<int> index;
+    for (int i = 0; i < fontCount; ++i) {
+        int found = -1;
+        for (int j = 0; j < icons.fonts.size(); ++j) {
+            if (qstrcmp(icons.fonts.at(j)->style, fonts[i].style) == 0) {
+                found = j;
+                break;
+            }
+        }
+        if (found < 0) {
+            icons.fonts.append(&fonts[i]);
+            found = icons.fonts.size() - 1;
+        }
+        index.append(found);
+    }
+    for (int i = 0; i < glyphCount; ++i) {
+        const QFontIconEmbeddedGlyph *glyph = &glyphs[i];
+        if (glyph->font < 0 || glyph->font >= fontCount) {
+            continue;
+        }
+        const int font = index.at(glyph->font);
+        icons.glyphs.insert(glyphKey(font, glyph->code), glyph);
+        icons.glyphFont.insert(glyph, font);
+    }
+    return true;
 }
 
 const QStringList &QFontIcon::families() const
@@ -234,8 +490,31 @@ void QFontIconEngine::paint(QPainter *painter, const QRect &rect, QIcon::Mode mo
         painter->rotate(mAngle);
         painter->translate(-center);
     }
-    painter->drawText(rect, Qt::AlignCenter | Qt::AlignVCenter, mLetter);
+    if (mGlyph && mGlyphFont) {
+        paintEmbedded(painter, rect, penColor);
+    } else {
+        painter->drawText(rect, Qt::AlignCenter | Qt::AlignVCenter, mLetter);
+    }
     painter->restore();
+}
+
+void QFontIconEngine::paintEmbedded(QPainter *painter, const QRect &rect, const QColor &color) const
+{
+    // Placed as drawText() places the font's character: the same size (80 %
+    // of the height), centred on its advance width and on the font's line
+    // (ascent + descent)
+    const qreal pixelSize = qMax(1, qRound(rect.height() * 0.8));
+    const qreal scale = pixelSize / mGlyphFont->unitsPerEm;
+    const qreal width = mGlyph->advance * scale;
+    const qreal lineHeight = (mGlyphFont->ascent - mGlyphFont->descent) * scale;
+    const qreal x = rect.x() + (rect.width() - width) / 2.0;
+    const qreal baseline = rect.y() + (rect.height() - lineHeight) / 2.0 + mGlyphFont->ascent * scale;
+
+    // Font units, y up -> pixels, y down
+    const QTransform toRect(scale, 0, 0, -scale, x, baseline);
+    painter->setPen(Qt::NoPen);
+    painter->setBrush(color);
+    painter->drawPath(toRect.map(embeddedPath(mGlyph)));
 }
 
 QPixmap QFontIconEngine::pixmap(const QSize &size, QIcon::Mode mode, QIcon::State state)
@@ -274,6 +553,9 @@ QPixmap QFontIconEngine::scaledPixmap(const QSize &size, QIcon::Mode mode, QIcon
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 bool QFontIconEngine::isNull()
 {
+    if (mGlyph) {
+        return false;
+    }
     return mFontFamily.isEmpty() || mLetter.isNull();
 }
 #endif
@@ -308,6 +590,12 @@ void QFontIconEngine::setRotation(double angle)
     mAngle = angle;
 }
 
+void QFontIconEngine::setEmbeddedGlyph(const QFontIconEmbeddedGlyph *glyph, const QFontIconEmbeddedFont *font)
+{
+    mGlyph = glyph;
+    mGlyphFont = font;
+}
+
 QIconEngine *QFontIconEngine::clone() const
 {
     // Everything, the letter included (a copied icon was empty without it)
@@ -317,5 +605,6 @@ QIconEngine *QFontIconEngine::clone() const
     engine->setLetter(mLetter);
     engine->setBaseColor(mBaseColor);
     engine->setRotation(mAngle);
+    engine->setEmbeddedGlyph(mGlyph, mGlyphFont);
     return engine;
 }

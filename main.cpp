@@ -1,6 +1,9 @@
 /**
  * @file main.cpp
  * @brief QFontIcon example: Font Awesome 5 icons on buttons, in every style.
+ *
+ * Built with CMake, the icons are compiled in (example-icons.txt): no font file
+ * is loaded. Built with qmake, they come from the font files.
  */
 
 #include <QApplication>
@@ -12,10 +15,14 @@ int main(int argc, char *argv[])
 {
     QApplication a(argc, argv);
 
-    // Font Awesome 5: the first font added is the default (Solid)
+#ifdef QFONTICON_EXAMPLE_USE_FONTS
+    // qmake build: Font Awesome 5 from font files; the first font added is
+    // the default (Solid). The CMake build compiles the icons in instead
+    // (example-icons.txt) and loads no font.
     QFontIcon::addFont(":/fonts/fa-solid-900.ttf");
     QFontIcon::addFont(":/fonts/fa-regular-400.ttf");
     QFontIcon::addFont(":/fonts/fa-brands-400.ttf");
+#endif
 
     QWidget window;
     window.setWindowTitle("QFontIcon: Font Awesome 5");

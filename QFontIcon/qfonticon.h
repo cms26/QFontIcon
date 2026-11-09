@@ -44,6 +44,34 @@ SOFTWARE.
 class QFontIcon;
 class QFontIconEngine;
 
+/**
+ * @brief One font of compiled-in icons (written by qfonticon_embed_icons()).
+ *
+ * The font's metrics, so compiled-in icons are placed exactly as the font
+ * would place them.
+ */
+struct QFontIconEmbeddedFont
+{
+    const char *style;       ///< The icon set's name in icon lists, e.g. "solid".
+    const char *family;      ///< The font's family, e.g. "Font Awesome 5 Free".
+    const char *fontStyle;   ///< The font's style, e.g. "Solid".
+    int unitsPerEm;          ///< Font units per em.
+    int ascent;              ///< Ascent in font units.
+    int descent;             ///< Descent in font units (negative).
+};
+
+/**
+ * @brief One compiled-in icon: a glyph's outline (written by qfonticon_embed_icons()).
+ */
+struct QFontIconEmbeddedGlyph
+{
+    int font;                ///< Index into the QFontIconEmbeddedFont array it came with.
+    unsigned int code;       ///< The character's code, e.g. 0xf015.
+    const char *name;        ///< The glyph's name, e.g. "home".
+    int advance;             ///< Advance width in font units.
+    const char *path;        ///< The outline: SVG path data in font units, y up.
+};
+
 /** @brief Shorthand for QFontIcon::icon(code). */
 #define FIcon(code) QFontIcon::icon(code)
 
@@ -153,12 +181,32 @@ public:
      */
     void setRotation(double angle);
 
+    /**
+     * @brief Draws a compiled-in icon instead of a font character.
+     *
+     * Set by QFontIcon::icon() when the icon was compiled in with
+     * qfonticon_embed_icons(); no font is used then.
+     * @param glyph The icon; @c nullptr: draw the font character.
+     * @param font  The font it came from (its metrics).
+     */
+    void setEmbeddedGlyph(const QFontIconEmbeddedGlyph *glyph, const QFontIconEmbeddedFont *font);
+
 private:
+    /**
+     * @brief Draws the compiled-in icon, placed as the font would place its character.
+     * @param painter The painter, already set up (colour, rotation).
+     * @param rect    Where to draw.
+     * @param color   The colour.
+     */
+    void paintEmbedded(QPainter *painter, const QRect &rect, const QColor &color) const;
+
     QString mFontFamily;   ///< The font family.
     QString mFontStyle;    ///< The style within the family ("Solid", ...); empty: default.
     QChar mLetter;         ///< The character drawn.
     QColor mBaseColor;     ///< Fixed colour; invalid: the palette's.
     double mAngle{0.0};    ///< Rotation in degrees, clockwise.
+    const QFontIconEmbeddedGlyph *mGlyph{nullptr};      ///< Compiled-in icon; nullptr: font character.
+    const QFontIconEmbeddedFont *mGlyphFont{nullptr};   ///< Its font's metrics.
 };
 
 /**
@@ -180,6 +228,16 @@ private:
  * Which font: the @p family argument of icon(), else the first font added.
  * If that font doesn't have the character, the other added fonts are tried
  * in the order they were added, so Brands icons work without naming the font.
+ *
+ * <b>Compiled-in icons, no font file at run time.</b> Security settings
+ * (e.g. Windows' "Block untrusted fonts") can stop fonts from loading. With
+ * qfonticon_embed_icons() in CMake, the icons the application uses are
+ * compiled in as outlines instead; icon() then needs no addFont() and works
+ * the same way (colours, rotation, styles):
+ * @code{.cmake}
+ * qfonticon_embed_icons(myapp ICONS_FILE icons.txt)   # e.g. "f015", "regular:f15b", "brands:github"
+ * @endcode
+ * Compiled-in icons come first; fonts added with addFont() are used for the rest.
  */
 class QFontIcon : public QObject
 {
@@ -226,6 +284,18 @@ public:
      */
     static QIcon icon(uint code, const QColor &baseColor = QColor(), double angle = 0.0,
                       const QString &family = QString());
+
+    /**
+     * @brief Registers compiled-in icons. Called by the code that
+     *        qfonticon_embed_icons() generates; not needed otherwise.
+     * @param fonts      The fonts the icons come from.
+     * @param fontCount  How many fonts.
+     * @param glyphs     The icons; their @c font indexes refer to @p fonts.
+     * @param glyphCount How many icons.
+     * @return Always @c true (for a static initializer).
+     */
+    static bool addEmbeddedIcons(const QFontIconEmbeddedFont *fonts, int fontCount,
+                                 const QFontIconEmbeddedGlyph *glyphs, int glyphCount);
 
     /**
      * @brief The family names of the added fonts, in the order they were added.
